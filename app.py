@@ -5,7 +5,7 @@ import numpy as np
 import plotly.express as px
 from io import BytesIO
 
-st.set_page_config(page_title="FootLens (matched to CSV) – Injuries & Impact", layout="wide")
+st.set_page_config(page_title="FootLens – Injuries & Impact", layout="wide")
 
 # -----------------------
 # Helper: expected column names (from your CSV)
