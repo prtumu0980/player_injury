@@ -22,43 +22,41 @@ COLMAP = {
     "age": ["Age", "age"]
 }
 
-
 def find_col(df, candidates):
-    """Find first matching column in the CSV."""
+    """Find and return the first matching column from candidates."""
     for c in candidates:
         if c in df.columns:
             return c
     return None
 
-
 @st.cache_data
 def load_and_clean(path="player_injuries_impact.csv"):
     df = pd.read_csv(path)
 
-    # Map canonical columns
+    # Map canonical names
     canonical = {}
     for key, poss in COLMAP.items():
         canonical[key] = find_col(df, poss)
 
-    # Add canonical columns to dataframe
+    # Create canonical columns
     for k, col in canonical.items():
         if col is not None:
             df[k] = df[col]
         else:
             df[k] = np.nan
 
-    # Date parsing
+    # Parse dates
     for dcol in ["match_date", "injury_start", "injury_end", "injury_date"]:
         df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
 
-    # Numeric cleanup
+    # Numeric cleaning
     for r in ["before_rating", "after_rating", "age"]:
         df[r] = pd.to_numeric(df[r], errors="coerce")
 
     # Performance drop
     df["performance_drop"] = df["before_rating"] - df["after_rating"]
 
-    # Injury phase label
+    # Phase label
     def phase_label(row):
         s, e, m = row["injury_start"], row["injury_end"], row["match_date"]
         if pd.isna(s) or pd.isna(e) or pd.isna(m):
@@ -71,16 +69,17 @@ def load_and_clean(path="player_injuries_impact.csv"):
 
     df["phase"] = df.apply(phase_label, axis=1)
 
-    # Month for heatmap
-    if df["injury_date"].notna().any():
-        df["injury_month"] = df["injury_date"].dt.month_name().str.slice(stop=3)
-    else:
-        df["injury_month"] = np.nan
+    # Injury month
+    df["injury_month"] = df["injury_date"].dt.month_name().str[:3] if df["injury_date"].notna().any() else np.nan
 
     return df
 
-
-df = load_and_clean()
+# Load data
+try:
+    df = load_and_clean()
+except Exception as e:
+    st.error(f"Error loading CSV file: {e}")
+    st.stop()
 
 # -------------------
 # SIDEBAR FILTERS
@@ -102,7 +101,9 @@ date_range = st.sidebar.date_input(
 significant_only = st.sidebar.checkbox("Only show significant drops (>= 2.0)", False)
 allow_download = st.sidebar.checkbox("Enable CSV download", True)
 
-# Apply filters
+# -------------------
+# APPLY FILTERS
+# -------------------
 fdf = df.copy()
 
 if selected_team != "All":
@@ -111,7 +112,7 @@ if selected_team != "All":
 if selected_player != "All":
     fdf = fdf[fdf["player"] == selected_player]
 
-if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
     start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
     fdf = fdf[(fdf["match_date"] >= start) & (fdf["match_date"] <= end)]
 
@@ -126,21 +127,19 @@ st.title("⚽ FootLens Lite — Injuries & Performance Impact")
 k1, k2, k3, k4 = st.columns(4)
 
 with k1:
-    st.metric("Records (filtered)", len(fdf))
+    st.metric("Filtered Records", len(fdf))
 
 with k2:
-    st.metric("Injury records", fdf["injury_date"].notna().sum())
+    st.metric("Injury Records", int(fdf["injury_date"].notna().sum()))
 
 with k3:
     avg_drop = fdf["performance_drop"].mean()
-    st.metric("Avg Performance Drop", f"{avg_drop:.2f}" if not np.isnan(avg_drop) else "N/A")
+    st.metric("Avg Performance Drop", f"{avg_drop:.2f}" if pd.notna(avg_drop) else "N/A")
 
 with k4:
-    avg_before = fdf["before_rating"].mean()
-    avg_after = fdf["after_rating"].mean()
-    st.metric("Avg Before → After",
-              f"{avg_before:.2f} → {avg_after:.2f}"
-              if not (np.isnan(avg_before) or np.isnan(avg_after)) else "N/A")
+    before = fdf["before_rating"].mean()
+    after = fdf["after_rating"].mean()
+    st.metric("Avg Before → After", f"{before:.2f} → {after:.2f}" if pd.notna(before) and pd.notna(after) else "N/A")
 
 st.markdown("---")
 
@@ -149,84 +148,84 @@ st.markdown("---")
 # -------------------
 left, right = st.columns([3, 1])
 
-# LEFT COLUMN CHARTS
+# LEFT SIDE — BIG CHARTS
 with left:
     # Team drop chart
-    st.subheader("Average performance drop by team")
+    st.subheader("Average Performance Drop by Team")
     team_drop = fdf.groupby("team", as_index=False)["performance_drop"].mean().dropna()
-    if team_drop.empty:
-        st.info("No team-level data available.")
+    if not team_drop.empty:
+        fig1 = px.bar(team_drop, x="team", y="performance_drop", title="Avg Performance Drop per Team")
+        st.plotly_chart(fig1, use_container_width=True)
     else:
-        fig = px.bar(team_drop, x="team", y="performance_drop",
-                     title="Average performance drop per team")
-        st.plotly_chart(fig, use_container_width=True)
+        st.info("No team-level rating data found.")
 
-    # Player timeline
-    st.subheader("Player timeline — Before vs After")
+    # Player timeline chart
+    st.subheader("Player Timeline — Before vs After")
     if selected_player != "All":
         pdf = df[df["player"] == selected_player].sort_values("match_date")
-        if pdf[["before_rating", "after_rating"]].dropna(how="all").empty:
-            st.info("Not enough data for this player.")
-        else:
-            timeline = pdf.set_index("match_date")[["before_rating", "after_rating"]].reset_index()
-            melted = timeline.melt(id_vars="match_date", value_name="rating", var_name="phase")
-            fig2 = px.line(melted, x="match_date", y="rating", color="phase",
-                           title=f"Rating timeline for {selected_player}")
+        if not pdf.empty:
+            melted = pdf.melt(id_vars="match_date", value_vars=["before_rating", "after_rating"], var_name="Phase", value_name="Rating")
+            fig2 = px.line(melted, x="match_date", y="Rating", color="Phase", title=f"Timeline: {selected_player}")
             st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("No rating data for this player.")
     else:
-        st.info("Select a player from the sidebar.")
+        st.info("Select a player to view timeline.")
 
-    st.subheader("Top drops & improvements")
-    top_drops = fdf.sort_values("performance_drop", ascending=False).head(10)
-    top_improve = fdf.sort_values("performance_drop", ascending=True).head(10)
+    # Top drops & improvements
+    st.subheader("Top Drops & Top Comebacks")
+
+    drops = fdf.sort_values("performance_drop", ascending=False).head(10)
+    improve = fdf.sort_values("performance_drop", ascending=True).head(10)
 
     st.write("### Biggest Drops")
-    st.table(top_drops[["player", "team", "performance_drop"]])
+    st.table(drops[["player", "team", "performance_drop"]])
 
     st.write("### Biggest Improvements")
-    st.table(top_improve[["player", "team", "performance_drop"]])
+    st.table(improve[["player", "team", "performance_drop"]])
 
-# RIGHT COLUMN
+# RIGHT SIDE — HEATMAP & SCATTER
 with right:
-    st.subheader("Injury heatmap")
+    st.subheader("Injuries Heatmap (Team × Month)")
     heat = fdf.groupby(["team", "injury_month"]).size().reset_index(name="count")
-    if heat.empty:
-        st.info("No injury month data available.")
-    else:
+    if not heat.empty:
         pivot = heat.pivot(index="team", columns="injury_month", values="count").fillna(0)
         fig3 = px.imshow(
             pivot.values,
             x=pivot.columns,
             y=pivot.index,
+            color_continuous_scale="Reds",
             labels={"x": "Month", "y": "Team", "color": "Count"},
-            title="Injury frequency"
+            title="Injury Count by Month"
         )
         st.plotly_chart(fig3, use_container_width=True)
-
-    st.subheader("Age vs. performance drop")
-    scatter_df = fdf.dropna(subset=["age", "performance_drop"])
-    if scatter_df.empty:
-        st.info("No age data.")
     else:
-        fig4 = px.scatter(scatter_df, x="age", y="performance_drop", color="team",
-                          hover_data=["player"], title="Age vs Drop")
+        st.info("No injury-month data available.")
+
+    st.subheader("Age vs Performance Drop")
+    scatter_df = fdf.dropna(subset=["age", "performance_drop"])
+    if not scatter_df.empty:
+        fig4 = px.scatter(
+            scatter_df,
+            x="age",
+            y="performance_drop",
+            color="team",
+            hover_data=["player"],
+            title="Age vs Performance Drop"
+        )
         st.plotly_chart(fig4, use_container_width=True)
+    else:
+        st.info("No age or drop data.")
 
 # -------------------
-# DATA + DOWNLOAD
+# DATA TABLE + DOWNLOAD
 # -------------------
 st.markdown("---")
 st.subheader("Filtered Data Preview")
 st.dataframe(fdf.head(200))
 
 if allow_download:
-    buffer = BytesIO()
-    fdf.to_csv(buffer, index=False)
-    buffer.seek(0)
-
-    st.download_button(
-        "Download Filtered CSV",
-        data=buffer,
-        file_name="footlens_filtered.csv",
-        mime="text/csv"
-    )
+    buf = BytesIO()
+    fdf.to_csv(buf, index=False)
+    buf.seek(0)
+    st.download_button("Download Filtered CSV", data=buf, file_name="footlens_filtered.csv", mime="text/csv")
